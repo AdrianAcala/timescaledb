@@ -6733,21 +6733,28 @@ _process_utility_init(void)
 	 * call ExecCheckPermissions without chaining to other ProcessUtility
 	 * hooks.
 	 */
-	if (*rendezvous != NULL)
+	if (*rendezvous == NULL)
 	{
-		process_utility_rendezvous = *rendezvous;
-		prev_ProcessUtility_hook = process_utility_rendezvous->prev_hook;
-		process_utility_rendezvous->versioned_hook = timescaledb_ddl_command_start;
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("TimescaleDB ProcessUtility loader rendezvous is unavailable"),
+				 errhint("Restart PostgreSQL to load the current TimescaleDB loader.")));
 	}
-	else
+
+	process_utility_rendezvous = *rendezvous;
+	if (process_utility_rendezvous->timescaledb_hook != NULL &&
+		process_utility_rendezvous->timescaledb_hook != timescaledb_ddl_command_start)
 	{
-		/* Fallback when the loader rendezvous is absent (should not happen). */
-		prev_ProcessUtility_hook = ProcessUtility_hook;
-		ProcessUtility_hook = timescaledb_ddl_command_start;
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("TimescaleDB ProcessUtility handler is already registered")));
 	}
+
+	prev_ProcessUtility_hook = process_utility_rendezvous->prev_hook;
 
 	RegisterXactCallback(process_utility_xact_abort, NULL);
 	RegisterSubXactCallback(process_utility_subxact_abort, NULL);
+	process_utility_rendezvous->timescaledb_hook = timescaledb_ddl_command_start;
 }
 
 void
@@ -6755,12 +6762,11 @@ _process_utility_fini(void)
 {
 	if (process_utility_rendezvous != NULL)
 	{
-		process_utility_rendezvous->versioned_hook = NULL;
+		if (process_utility_rendezvous->timescaledb_hook == timescaledb_ddl_command_start)
+		{
+			process_utility_rendezvous->timescaledb_hook = NULL;
+		}
 		process_utility_rendezvous = NULL;
-	}
-	else
-	{
-		ProcessUtility_hook = prev_ProcessUtility_hook;
 	}
 
 	UnregisterXactCallback(process_utility_xact_abort, NULL);

@@ -214,6 +214,28 @@ CREATE EXTENSION timescaledb_osm VERSION 'mock-1';
 -- (loader slot / last). Both should see this DROP TABLE.
 DROP TABLE test;
 
+-- A legacy versioned extension that installs ProcessUtility globally is
+-- captured by the loader and still runs after the outer OSM hook.
+DROP EXTENSION timescaledb_osm;
+DROP EXTENSION timescaledb;
+\c :TEST_DBNAME :ROLE_SUPERUSER
+CREATE EXTENSION timescaledb VERSION 'mock-legacy';
+CREATE TABLE legacy_hook_test(i int);
+CREATE EXTENSION timescaledb_osm VERSION 'mock-1';
+DROP TABLE legacy_hook_test;
+
+-- A failed versioned initialization must restore the outer hook and clear the
+-- partially published loader slot.
+DROP EXTENSION timescaledb_osm;
+DROP EXTENSION timescaledb;
+\c :TEST_DBNAME :ROLE_SUPERUSER
+LOAD '$libdir/timescaledb_osm-mock-1';
+CREATE TABLE failed_hook_test(i int);
+\set ON_ERROR_STOP 0
+CREATE EXTENSION timescaledb VERSION 'mock-pu-error';
+\set ON_ERROR_STOP 1
+DROP TABLE failed_hook_test;
+
 -- clean up additional database
 \c :TEST_DBNAME :ROLE_SUPERUSER
 DROP DATABASE :"TEST_DBNAME_2" WITH (FORCE);

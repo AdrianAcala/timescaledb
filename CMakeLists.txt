@@ -677,6 +677,7 @@ endif(CODECOVERAGE)
 
 # TAP test support
 option(TAP_CHECKS "Enable TAP test support" ON)
+option(PGAUDIT_TESTS "Enable pgAudit compatibility TAP tests" OFF)
 
 if(TAP_CHECKS)
   find_package(Perl 5.8)
@@ -708,6 +709,50 @@ if(TAP_CHECKS)
     message(STATUS "Not running TAP tests: Perl not found.")
     set(TAP_CHECKS OFF)
   endif()
+endif()
+
+if(PGAUDIT_TESTS)
+  if(NOT TAP_CHECKS)
+    message(FATAL_ERROR "PGAUDIT_TESTS requires TAP_CHECKS")
+  endif()
+
+  set(PGAUDIT_LIBRARY "${PG_PKGLIBDIR}/pgaudit${CMAKE_SHARED_MODULE_SUFFIX}")
+  set(PGAUDIT_CONTROL "${PG_SHAREDIR}/extension/pgaudit.control")
+
+  if(NOT EXISTS "${PGAUDIT_LIBRARY}")
+    message(
+      FATAL_ERROR
+        "PGAUDIT_TESTS requires an installed pgAudit library at ${PGAUDIT_LIBRARY}"
+    )
+  endif()
+
+  if(NOT EXISTS "${PGAUDIT_CONTROL}")
+    message(
+      FATAL_ERROR
+        "PGAUDIT_TESTS requires an installed pgAudit control file at ${PGAUDIT_CONTROL}"
+    )
+  endif()
+
+  file(STRINGS "${PGAUDIT_CONTROL}" PGAUDIT_DEFAULT_VERSION_LINE
+       REGEX "^default_version[ \t]*=")
+  string(REGEX MATCH "[0-9]+\\.[0-9]+" PGAUDIT_VERSION
+               "${PGAUDIT_DEFAULT_VERSION_LINE}")
+
+  if(NOT PGAUDIT_VERSION MATCHES "^${PG_VERSION_MAJOR}\\.")
+    message(
+      FATAL_ERROR
+        "Installed pgAudit version '${PGAUDIT_VERSION}' does not match PostgreSQL ${PG_VERSION_MAJOR}"
+    )
+  endif()
+
+  if(NOT EXISTS "${PG_SHAREDIR}/extension/pgaudit--${PGAUDIT_VERSION}.sql")
+    message(
+      FATAL_ERROR
+        "PGAUDIT_TESTS requires the installed pgAudit ${PGAUDIT_VERSION} SQL file"
+    )
+  endif()
+
+  message(STATUS "Enabling pgAudit ${PGAUDIT_VERSION} compatibility tests")
 endif()
 
 if(UNIX)

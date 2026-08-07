@@ -459,9 +459,36 @@ WARNING:  got lwlock osm lock
 DROP TABLE test;
 NOTICE:  OSM-mock-1 got DROP TABLE 'test'
 NOTICE:  mock-mock-2 got DROP TABLE 'test'
+-- A legacy versioned extension that installs ProcessUtility globally is
+-- captured by the loader and still runs after the outer OSM hook.
+DROP EXTENSION timescaledb_osm;
+DROP EXTENSION timescaledb;
+\c :TEST_DBNAME :ROLE_SUPERUSER
+CREATE EXTENSION timescaledb VERSION 'mock-legacy';
+WARNING:  mock init "mock-legacy"
+CREATE TABLE legacy_hook_test(i int);
+CREATE EXTENSION timescaledb_osm VERSION 'mock-1';
+WARNING:  OSM-mock-1 _PG_init
+WARNING:  got lwlock osm lock
+DROP TABLE legacy_hook_test;
+NOTICE:  OSM-mock-1 got DROP TABLE 'legacy_hook_test'
+NOTICE:  mock-mock-legacy got DROP TABLE 'legacy_hook_test'
+-- A failed versioned initialization must restore the outer hook and clear the
+-- partially published loader slot.
+DROP EXTENSION timescaledb_osm;
+DROP EXTENSION timescaledb;
+\c :TEST_DBNAME :ROLE_SUPERUSER
+LOAD '$libdir/timescaledb_osm-mock-1';
+WARNING:  OSM-mock-1 _PG_init
+WARNING:  got lwlock osm lock
+CREATE TABLE failed_hook_test(i int);
+\set ON_ERROR_STOP 0
+CREATE EXTENSION timescaledb VERSION 'mock-pu-error';
+WARNING:  mock init "mock-pu-error"
+ERROR:  mock ProcessUtility initialization failed
+\set ON_ERROR_STOP 1
+DROP TABLE failed_hook_test;
+NOTICE:  OSM-mock-1 got DROP TABLE 'failed_hook_test'
 -- clean up additional database
 \c :TEST_DBNAME :ROLE_SUPERUSER
 DROP DATABASE :"TEST_DBNAME_2" WITH (FORCE);
-WARNING:  mock init "mock-2"
-WARNING:  OSM-mock-1 _PG_init
-WARNING:  got lwlock osm lock

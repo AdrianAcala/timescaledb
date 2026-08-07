@@ -12,6 +12,8 @@ add_library(${PROJECT_NAME}-mock-4 MODULE ${SOURCES} config.h)
 add_library(${PROJECT_NAME}-mock-5 MODULE ${SOURCES} config.h)
 add_library(${PROJECT_NAME}-mock-broken MODULE ${SOURCES} config.h)
 add_library(${PROJECT_NAME}-mock-6 MODULE ${SOURCES} config.h)
+add_library(${PROJECT_NAME}-mock-legacy MODULE ${SOURCES} config.h)
+add_library(${PROJECT_NAME}-mock-pu-error MODULE ${SOURCES} config.h)
 
 target_compile_definitions(${PROJECT_NAME}-mock-1
                            PRIVATE TIMESCALEDB_VERSION_MOD="mock-1")
@@ -28,6 +30,12 @@ target_compile_definitions(${PROJECT_NAME}-mock-broken
                            PRIVATE TIMESCALEDB_VERSION_MOD="mock-broken")
 target_compile_definitions(${PROJECT_NAME}-mock-6
                            PRIVATE TIMESCALEDB_VERSION_MOD="mock-6")
+target_compile_definitions(
+  ${PROJECT_NAME}-mock-legacy PRIVATE TIMESCALEDB_VERSION_MOD="mock-legacy"
+                                      MOCK_LEGACY_PROCESS_UTILITY)
+target_compile_definitions(
+  ${PROJECT_NAME}-mock-pu-error PRIVATE TIMESCALEDB_VERSION_MOD="mock-pu-error"
+                                        MOCK_PROCESS_UTILITY_INIT_ERROR)
 
 foreach(
   MOCK_VERSION
@@ -37,7 +45,9 @@ foreach(
   mock-4
   mock-broken
   mock-5
-  mock-6)
+  mock-6
+  mock-legacy
+  mock-pu-error)
   set_target_properties(
     ${PROJECT_NAME}-${MOCK_VERSION}
     PROPERTIES OUTPUT_NAME ${PROJECT_NAME}-${MOCK_VERSION} PREFIX "")

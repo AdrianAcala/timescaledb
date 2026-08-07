@@ -180,6 +180,20 @@ jobs:
 
         echo "$(readlink -f install/bin)" >> "${GITHUB_PATH}"
 
+    - name: Build and install pgAudit ${{ matrix.pgaudit_version }}
+      if: runner.os == 'Linux' && matrix.pgaudit_tests
+      run: |
+        set -xeu
+
+        wget -q --tries=6 --waitretry=15 -O pgaudit.tar.gz \
+          "https://github.com/pgaudit/pgaudit/archive/refs/tags/${{ matrix.pgaudit_version }}.tar.gz"
+        mkdir pgaudit
+        tar --extract --file=pgaudit.tar.gz --directory=pgaudit --strip-components=1
+        make -j $(getconf _NPROCESSORS_ONLN) -C pgaudit USE_PGXS=1 \
+          PG_CONFIG="$(readlink -f install/bin/pg_config)"
+        make -C pgaudit install USE_PGXS=1 \
+          PG_CONFIG="$(readlink -f install/bin/pg_config)"
+
     - name: Test telemetry without OpenSSL
       if: github.event_name != 'pull_request' && runner.os == 'Linux' && matrix.build_type == 'Debug'
       run: |
@@ -200,6 +214,7 @@ jobs:
           -DPG_SOURCE_DIR=$(readlink -f pg) \
           ${{ matrix.tsdb_build_args }} -DCODECOVERAGE=${{ matrix.coverage }} \
           -DREQUIRE_ALL_TESTS=${{ matrix.installcheck && 'ON' || 'OFF' }} \
+          -DPGAUDIT_TESTS=${{ matrix.pgaudit_tests && 'ON' || 'OFF' }} \
           -DTEST_PG_LOG_DIRECTORY="$(readlink -f .)"
         make -j $(getconf _NPROCESSORS_ONLN) -C build
         make -C build install
@@ -422,4 +437,3 @@ jobs:
             exit 1
           fi
           echo "All checks passed or were safely skipped."
-

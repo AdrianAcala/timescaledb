@@ -20,6 +20,7 @@
 #include <tcop/utility.h>
 #include <utils/guc.h>
 #include <utils/inval.h>
+#include <utils/varlena.h>
 
 #include "compat/compat.h"
 #include "config.h"
@@ -683,15 +684,16 @@ loader_ProcessUtility(PlannedStmt *pstmt, const char *queryString, bool readOnly
 					  ProcessUtilityContext context, ParamListInfo params,
 					  QueryEnvironment *queryEnv, DestReceiver *dest, QueryCompletion *qc)
 {
-	ProcessUtility_hook_type versioned_hook = process_utility_rendezvous.versioned_hook;
+	ProcessUtility_hook_type timescaledb_hook = process_utility_rendezvous.timescaledb_hook;
 
-	if (versioned_hook)
+	if (timescaledb_hook)
 	{
-		versioned_hook(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, qc);
+		timescaledb_hook(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, qc);
 		return;
 	}
 
 	if (prev_ProcessUtility_hook)
+	{
 		prev_ProcessUtility_hook(pstmt,
 								 queryString,
 								 readOnlyTree,
@@ -700,7 +702,9 @@ loader_ProcessUtility(PlannedStmt *pstmt, const char *queryString, bool readOnly
 								 queryEnv,
 								 dest,
 								 qc);
+	}
 	else
+	{
 		standard_ProcessUtility(pstmt,
 								queryString,
 								readOnlyTree,
@@ -709,6 +713,93 @@ loader_ProcessUtility(PlannedStmt *pstmt, const char *queryString, bool readOnly
 								queryEnv,
 								dest,
 								qc);
+	}
+}
+
+/*
+ * Compare a shared_preload_libraries entry with a library name. PostgreSQL
+ * accepts bare names and paths, with or without the platform DLSUFFIX.
+ */
+static bool
+preload_library_name_matches(const char *path, const char *library_name)
+{
+	const char *basename = last_dir_separator(path);
+	size_t basename_len;
+	size_t library_name_len = strlen(library_name);
+	size_t suffix_len = strlen(DLSUFFIX);
+
+	basename = basename == NULL ? path : basename + 1;
+	basename_len = strlen(basename);
+
+	if (basename_len >= suffix_len && strcmp(basename + basename_len - suffix_len, DLSUFFIX) == 0)
+	{
+		basename_len -= suffix_len;
+	}
+
+	return basename_len == library_name_len &&
+		   strncmp(basename, library_name, library_name_len) == 0;
+}
+
+/*
+ * pgAudit must be loaded after TimescaleDB so its ProcessUtility hook becomes
+ * the outer hook and can establish audit state before TimescaleDB executes
+ * COPY. Validate the complete setting before installing any loader hooks.
+ */
+static void
+validate_pgaudit_preload_order(void)
+{
+	char *rawstring;
+	List *libraries = NIL;
+	ListCell *lc;
+	bool pgaudit_seen = false;
+	bool timescaledb_seen = false;
+
+	if (shared_preload_libraries_string == NULL || shared_preload_libraries_string[0] == '\0')
+	{
+		return;
+	}
+
+	rawstring = pstrdup(shared_preload_libraries_string);
+	if (!SplitDirectoriesString(rawstring, ',', &libraries))
+	{
+		list_free_deep(libraries);
+		pfree(rawstring);
+		ereport(FATAL,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("invalid list syntax in parameter \"shared_preload_libraries\"")));
+	}
+
+	foreach (lc, libraries)
+	{
+		const char *library = lfirst(lc);
+
+		if (!pgaudit_seen && preload_library_name_matches(library, "pgaudit"))
+		{
+			pgaudit_seen = true;
+		}
+		else if (!timescaledb_seen && preload_library_name_matches(library, EXTENSION_NAME))
+		{
+			timescaledb_seen = true;
+
+			if (!pgaudit_seen)
+			{
+				continue;
+			}
+
+			list_free_deep(libraries);
+			pfree(rawstring);
+			ereport(FATAL,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("pgaudit must be listed after timescaledb in shared_preload_libraries"),
+					 errdetail("Correct COPY auditing requires pgAudit's ProcessUtility hook to "
+							   "wrap TimescaleDB's hook."),
+					 errhint("Set shared_preload_libraries = 'timescaledb,pgaudit' and restart "
+							 "PostgreSQL.")));
+		}
+	}
+
+	list_free_deep(libraries);
+	pfree(rawstring);
 }
 
 static void
@@ -726,6 +817,8 @@ _PG_init(void)
 	{
 		extension_load_without_preload();
 	}
+
+	validate_pgaudit_preload_order();
 	extension_mark_loader_present();
 
 	elog(INFO, "timescaledb loaded");
@@ -788,11 +881,17 @@ _PG_init(void)
 	 */
 	prev_ProcessUtility_hook = ProcessUtility_hook;
 	process_utility_rendezvous.prev_hook = prev_ProcessUtility_hook;
-	process_utility_rendezvous.versioned_hook = NULL;
+	process_utility_rendezvous.timescaledb_hook = NULL;
 	ProcessUtility_hook = loader_ProcessUtility;
 	{
 		void **pu_ptr = find_rendezvous_variable(RENDEZVOUS_PROCESS_UTILITY_HOOK);
 
+		if (*pu_ptr != NULL && *pu_ptr != &process_utility_rendezvous)
+		{
+			ereport(FATAL,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("TimescaleDB ProcessUtility loader rendezvous is already owned")));
+		}
 		*pu_ptr = &process_utility_rendezvous;
 	}
 }
@@ -803,6 +902,9 @@ do_load(TsExtension *const ext)
 	char *version = extension_version(ext->name);
 	char soname[MAX_SO_NAME_LEN];
 	post_parse_analyze_hook_type old_hook;
+	ProcessUtility_hook_type old_process_utility_hook = NULL;
+	ProcessUtility_hook_type old_timescaledb_hook = NULL;
+	bool isolate_process_utility = strcmp(ext->name, EXTENSION_NAME) == 0;
 
 	/* If the right version of the library is already loaded, we will just
 	 * skip the actual loading. If the wrong version of the library is loaded,
@@ -852,6 +954,22 @@ do_load(TsExtension *const ext)
 	 */
 	old_hook = post_parse_analyze_hook;
 	post_parse_analyze_hook = NULL;
+	if (isolate_process_utility)
+	{
+		old_process_utility_hook = ProcessUtility_hook;
+		/*
+		 * A dynamic background worker can already have loaded the versioned
+		 * DSO, so retain an existing publication while verifying the load.
+		 */
+		old_timescaledb_hook = process_utility_rendezvous.timescaledb_hook;
+
+		/*
+		 * Current versions publish through the rendezvous. Legacy versions
+		 * install a global hook, which we capture below and promote into the
+		 * rendezvous while restoring the outer hook chain.
+		 */
+		ProcessUtility_hook = NULL;
+	}
 
 	PG_TRY();
 	{
@@ -861,10 +979,39 @@ do_load(TsExtension *const ext)
 		{
 			DirectFunctionCall1(ts_post_load_init, CharGetDatum(0));
 		}
+
+		if (isolate_process_utility)
+		{
+			ProcessUtility_hook_type published_hook = process_utility_rendezvous.timescaledb_hook;
+
+			if (published_hook != NULL && ProcessUtility_hook != NULL)
+			{
+				ereport(ERROR,
+						(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+						 errmsg("TimescaleDB installed conflicting ProcessUtility handlers")));
+			}
+
+			if (published_hook == NULL && ProcessUtility_hook == NULL)
+			{
+				ereport(ERROR,
+						(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+						 errmsg("TimescaleDB did not register a ProcessUtility handler")));
+			}
+
+			if (published_hook == NULL)
+			{
+				process_utility_rendezvous.timescaledb_hook = ProcessUtility_hook;
+			}
+		}
 	}
 	PG_CATCH();
 	{
 		post_parse_analyze_hook = old_hook;
+		if (isolate_process_utility)
+		{
+			ProcessUtility_hook = old_process_utility_hook;
+			process_utility_rendezvous.timescaledb_hook = old_timescaledb_hook;
+		}
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -873,6 +1020,10 @@ do_load(TsExtension *const ext)
 	 * the loader would silently drop it when restoring old_hook below. */
 	Assert(post_parse_analyze_hook == NULL);
 	post_parse_analyze_hook = old_hook;
+	if (isolate_process_utility)
+	{
+		ProcessUtility_hook = old_process_utility_hook;
+	}
 }
 
 inline static void

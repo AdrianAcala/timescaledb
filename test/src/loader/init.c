@@ -39,7 +39,9 @@ void ts_license_guc_assign_hook(const char *newval, void *extra);
 TS_FUNCTION_INFO_V1(ts_post_load_init);
 
 static ProcessUtility_hook_type prev_ProcessUtility_hook;
+#ifndef MOCK_LEGACY_PROCESS_UTILITY
 static TsProcessUtilityRendezvous *process_utility_rendezvous = NULL;
+#endif
 
 static void
 cache_invalidate_callback(Datum arg, Oid relid)
@@ -86,6 +88,7 @@ mock_process_utility_hook(PlannedStmt *pstmt, const char *queryString, bool read
 	}
 
 	if (prev_ProcessUtility_hook)
+	{
 		prev_ProcessUtility_hook(pstmt,
 								 queryString,
 								 readOnlyTree,
@@ -94,7 +97,9 @@ mock_process_utility_hook(PlannedStmt *pstmt, const char *queryString, bool read
 								 queryEnv,
 								 dest,
 								 qc);
+	}
 	else
+	{
 		standard_ProcessUtility(pstmt,
 								queryString,
 								readOnlyTree,
@@ -103,13 +108,16 @@ mock_process_utility_hook(PlannedStmt *pstmt, const char *queryString, bool read
 								queryEnv,
 								dest,
 								qc);
+	}
 }
 
 void
 _PG_init(void)
 {
+#ifndef MOCK_LEGACY_PROCESS_UTILITY
 	TsProcessUtilityRendezvous **rendezvous =
 		(TsProcessUtilityRendezvous **) find_rendezvous_variable(RENDEZVOUS_PROCESS_UTILITY_HOOK);
+#endif
 
 	/*
 	 * Check extension_is loaded to catch certain errors such as calls to
@@ -138,20 +146,31 @@ _PG_init(void)
 	/*
 	 * Register ProcessUtility through the loader rendezvous when available so
 	 * TimescaleDB remains last in the hook chain (matching the real
-	 * extension). Fall back to installing as the head when the rendezvous is
-	 * absent.
+	 * extension).
 	 */
+#ifdef MOCK_LEGACY_PROCESS_UTILITY
+	prev_ProcessUtility_hook = ProcessUtility_hook;
+	ProcessUtility_hook = mock_process_utility_hook;
+#else
 	if (*rendezvous != NULL)
 	{
 		process_utility_rendezvous = *rendezvous;
 		prev_ProcessUtility_hook = process_utility_rendezvous->prev_hook;
-		process_utility_rendezvous->versioned_hook = mock_process_utility_hook;
+		if (process_utility_rendezvous->timescaledb_hook != NULL)
+		{
+			elog(ERROR, "mock ProcessUtility handler is already registered");
+		}
+		process_utility_rendezvous->timescaledb_hook = mock_process_utility_hook;
 	}
 	else
 	{
-		prev_ProcessUtility_hook = ProcessUtility_hook;
-		ProcessUtility_hook = mock_process_utility_hook;
+		elog(ERROR, "mock ProcessUtility loader rendezvous is unavailable");
 	}
+#endif
+
+#ifdef MOCK_PROCESS_UTILITY_INIT_ERROR
+	elog(ERROR, "mock ProcessUtility initialization failed");
+#endif
 }
 
 /* mock for extension.c */

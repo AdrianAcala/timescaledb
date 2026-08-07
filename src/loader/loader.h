@@ -25,7 +25,8 @@ extern void ts_loader_extension_check(void);
  */
 typedef struct TsProcessUtilityRendezvous
 {
-	ProcessUtility_hook_type versioned_hook;
+	/* Owned exclusively by the core versioned TimescaleDB extension. */
+	ProcessUtility_hook_type timescaledb_hook;
 	ProcessUtility_hook_type prev_hook;
 } TsProcessUtilityRendezvous;
 

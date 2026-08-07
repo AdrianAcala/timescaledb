@@ -68,6 +68,7 @@ cleanup_on_pg_proc_exit(int code, Datum arg)
 	 * Order of items should be strict reverse order of _PG_init. Please
 	 * document any exceptions.
 	 */
+	_process_utility_fini();
 #ifdef TS_DEBUG
 	_conn_mock_fini();
 #endif
@@ -75,7 +76,6 @@ cleanup_on_pg_proc_exit(int code, Datum arg)
 	_conn_ssl_fini();
 #endif
 	_conn_plain_fini();
-	_process_utility_fini();
 	_event_trigger_fini();
 	_planner_fini();
 	_cache_invalidate_fini();
@@ -112,7 +112,6 @@ _PG_init(void)
 	_constraint_aware_append_init();
 	_chunk_append_init();
 	_event_trigger_init();
-	_process_utility_init();
 	_guc_init();
 	_conn_plain_init();
 	_executor_init();
@@ -122,6 +121,8 @@ _PG_init(void)
 #ifdef TS_DEBUG
 	_conn_mock_init();
 #endif
+	/* Publish the ProcessUtility handler only after all other initialization. */
+	_process_utility_init();
 
 	/* Register a cleanup function to be called when the backend exits */
 	on_proc_exit(cleanup_on_pg_proc_exit, 0);

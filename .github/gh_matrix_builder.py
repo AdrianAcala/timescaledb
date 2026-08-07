@@ -95,6 +95,8 @@ def build_debug_config(overrides):
             "os": "ubuntu-22.04",
             "pg_extra_args": "--enable-debug --enable-cassert --with-llvm LLVM_CONFIG=llvm-config",
             "pg_extensions": "postgres_fdw test_decoding",
+            "pgaudit_tests": False,
+            "pgaudit_version": "",
             "installcheck": True,
             "pginstallcheck": True,
             "tsdb_build_args": "-DWARNINGS_AS_ERRORS=ON",
@@ -186,9 +188,22 @@ m["include"].append(
     build_debug_config({"pg": PG16_LATEST, "ignored_tests": ignored_before_pg17})
 )
 
-m["include"].append(build_debug_config({"pg": PG17_LATEST}))
+m["include"].append(
+    build_debug_config(
+        {"pg": PG17_LATEST, "pgaudit_tests": True, "pgaudit_version": "17.1"}
+    )
+)
 
-m["include"].append(build_debug_config({"pg": PG18_LATEST, "coverage": True}))
+m["include"].append(
+    build_debug_config(
+        {
+            "pg": PG18_LATEST,
+            "coverage": True,
+            "pgaudit_tests": True,
+            "pgaudit_version": "18.0",
+        }
+    )
+)
 
 # test building against PG19
 m["include"].append(
